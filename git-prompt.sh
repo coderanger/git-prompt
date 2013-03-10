@@ -1,4 +1,14 @@
-
+		# cannot be started directly; must be called from `.` or `source` builtin
+		if [[ $0 != *bash ]]; then
+			cat <<-"EOF" >&2
+				This script *MUST* be called using the bash builtin `source`,
+				or its shorter counterpart, `.`, in order to function properly.
+				It cannot be started directly.
+				
+			EOF
+			exit
+		fi
+		
         # don't set prompt if this is not interactive shell
         [[ $- != *i* ]]  &&  return
 
@@ -23,8 +33,8 @@
         svn_module=${svn_module:-off}
         hg_module=${hg_module:-on}
         vim_module=${vim_module:-on}
+        virtualenv_module=${virtualenv_module:-on}
         rvm_module=${rvm_module:-off}
-        venv_module=${venv_module:-off}
         clock_module=${clock_module:-off}
         error_bell=${error_bell:-off}
         cwd_cmd=${cwd_cmd:-\\w}
@@ -36,6 +46,7 @@
         if [[ -n "$cols" && $cols -ge 8 ]];  then       #  if terminal supports colors
                 dir_color=${dir_color:-CYAN}
                 rc_color=${rc_color:-red}
+                virtualenv_color=${virtualenv_color:-green}
                 user_id_color=${user_id_color:-blue}
                 root_id_color=${root_id_color:-magenta}
         else                                            #  only B/W
@@ -58,14 +69,9 @@
                    op_vcs_color=${op_vcs_color:-MAGENTA}
              detached_vcs_color=${detached_vcs_color:-RED}
                       rvm_color=${rvm_color:-GREEN}
-                     venv_color=${venv_color:-YELLOW}
                     clock_color=${clock_color:-WHITE}
 
-             if [[ $OSTYPE == "linux-gnu" ]] ;  then                # no linux OSs do not support extra colors
-                  hex_vcs_color=${hex_vcs_color:-dim}
-             else
-                  hex_vcs_color=${hex_vcs_color:-colors_reset}
-             fi
+                  hex_vcs_color=${hex_vcs_color:-BLACK}         # gray
 
 
         max_file_list_length=${max_file_list_length:-100}
@@ -150,7 +156,6 @@
              detached_vcs_color=${!detached_vcs_color}
                   hex_vcs_color=${!hex_vcs_color}
                       rvm_color=${!rvm_color}
-                     venv_color=${!venv_color}
                     clock_color=${!clock_color}
 
         unset PROMPT_COMMAND
@@ -164,8 +169,7 @@
         fi
 
         ####################################################################  MARKERS
-        screen_marker="sCRn"
-        if [[ $LC_CTYPE =~ "UTF" && $TERM != "linux" ]];  then
+        if [[ "$LC_CTYPE $LC_ALL" =~ "UTF" && $TERM != "linux" ]];  then
                 elipses_marker="…"
         else
                 elipses_marker="..."
@@ -215,7 +219,7 @@ cwd_truncate() {
 
 		# trunc middle if over limit
                 if   [[ ${#path_middle}   -gt   $(( $cwd_middle_max + ${#elipses_marker} + 5 )) ]];   then
-			
+
 			# truncate
 			middle_tail=${path_middle:${#path_middle}-${cwd_middle_max}}
 
@@ -236,11 +240,14 @@ cwd_truncate() {
 
 set_shell_label() {
 
-        xterm_label() { echo  -n "]2;${@}" ; }   # FIXME: replace hardcodes with terminfo codes
+        xterm_label() {
+                local args="$*"
+                echo  -n "]2;${args:0:200}" ;    # FIXME: replace hardcodes with terminfo codes
+        }
 
         screen_label() {
                 # FIXME: run this only if screen is in xterm (how to test for this?)
-                xterm_label  "$screen_marker  $plain_who_where $@"
+                xterm_label  "$plain_who_where $@"
 
                 # FIXME $STY not inherited though "su -"
                 [ "$STY" ] && screen -S $STY -X title "$*"
@@ -254,7 +261,7 @@ set_shell_label() {
                                 screen_label "$*"
                                 ;;
 
-                        xterm* | rxvt* | gnome-terminal | konsole | eterm | wterm )
+                        xterm* | rxvt* | gnome-* | konsole | eterm | wterm )
                                 # is there a capability which we can to test
                                 # for "set term title-bar" and its escapes?
                                 xterm_label  "$plain_who_where $@"
@@ -289,12 +296,13 @@ set_shell_label() {
 
         # we don't need tty name under X11
         case $TERM in
-                xterm* | rxvt* | gnome-terminal | konsole | eterm | wterm | cygwin)  unset tty ;;
+                xterm* | rxvt* | gnome-terminal | konsole | eterm* | wterm | cygwin)  unset tty ;;
                 *);;
         esac
 
         dir_color=${!dir_color}
         rc_color=${!rc_color}
+        virtualenv_color=${!virtualenv_color}
         user_id_color=${!user_id_color}
         root_id_color=${!root_id_color}
 
@@ -309,10 +317,14 @@ set_shell_label() {
 
         host=${HOSTNAME}
         if [[ $short_hostname = "on" ]]; then
-            host=`hostname -s`
+			if [[ "$(uname)" =~ "CYGWIN" ]]; then
+				host=`hostname`
+			else
+				host=`hostname -s`
+			fi
         fi
         host=${host#$default_host}
-        uphost=`echo ${host} | tr a-z A-Z`
+        uphost=`echo ${host} | tr a-z-. A-Z_`
         if [[ $upcase_hostname = "on" ]]; then
                 host=${uphost}
         fi
@@ -320,7 +332,7 @@ set_shell_label() {
         host_color=${uphost}_host_color
         host_color=${!host_color}
         if [[ -z $host_color && -x /usr/bin/cksum ]] ;  then
-                cksum_color_no=`echo $uphost | cksum  | awk '{print $1%7}'`
+                cksum_color_no=`echo $uphost | cksum  | awk '{print $1%6}'`
                 color_index=(green yellow blue magenta cyan white)              # FIXME:  bw,  color-256
                 host_color=${color_index[cksum_color_no]}
         fi
@@ -329,7 +341,6 @@ set_shell_label() {
 
         # we might already have short host name
         host=${host%.$default_domain}
-
 
 #################################################################### WHO_WHERE
         #  [[user@]host[-tty]]
@@ -387,8 +398,7 @@ parse_svn_status() {
 parse_hg_status() {
 
         # ☿
-
-        [[  -d ./.hg/ ]]  ||  return  1
+        hg_root=`hg root 2>/dev/null` || return 1
 
         vcs=hg
 
@@ -406,8 +416,13 @@ parse_hg_status() {
 
         branch=`hg branch 2> /dev/null`
 
+        [[ -f $hg_root/.hg/bookmarks.current ]] && bookmark=`cat "$hg_root/.hg/bookmarks.current"`
+
         [[ -z $modified ]]   &&   [[ -z $untracked ]]   &&   [[ -z $added ]]   &&   clean=clean
         vcs_info=${branch/default/D}
+        if [[ "$bookmark" ]] ;  then
+                vcs_info+=/$bookmark
+        fi
  }
 
 
@@ -425,59 +440,50 @@ parse_git_status() {
         vcs=git
 
         ##########################################################   GIT STATUS
-	file_regex='\([^/ ]*\/\{0,1\}\).*'
 	added_files=()
 	modified_files=()
 	untracked_files=()
-        freshness="$dim="
+        [[ $rawhex_len -gt 0 ]]  && freshness="$dim="
+
         unset branch status modified added clean init added mixed untracked op detached
 
-	# quoting hell
+	# info not in porcelain status
         eval " $(
                 git status 2>/dev/null |
                     sed -n '
                         s/^# On branch /branch=/p
                         s/^nothing to commi.*/clean=clean/p
                         s/^# Initial commi.*/init=init/p
-
-                        s/^# Your branch is ahead of .[/[:alnum:]]\+. by [[:digit:]]\+ commit.*/freshness=${WHITE}↑/p
-                        s/^# Your branch is behind .[/[:alnum:]]\+. by [[:digit:]]\+ commit.*/freshness=${YELLOW}↓/p
-                        s/^# Your branch and .[/[:alnum:]]\+. have diverged.*/freshness=${YELLOW}↕/p
-
-                        /^# Changes to be committed:/,/^# [A-Z]/ {
-                            s/^# Changes to be committed:/added=added;/p
-
-                            s/^#	modified:   '"$file_regex"'/	[[ \" ${added_files[*]} \" =~ \" \1 \" ]] || added_files[${#added_files[@]}]=\"\1\"/p
-                            s/^#	new file:   '"$file_regex"'/	[[ \" ${added_files[*]} \" =~ \" \1 \" ]] || added_files[${#added_files[@]}]=\"\1\"/p
-                            s/^#	renamed:[^>]*> '"$file_regex"'/	[[ \" ${added_files[*]} \" =~ \" \1 \" ]] || added_files[${#added_files[@]}]=\"\1\"/p
-                            s/^#	copied:[^>]*> '"$file_regex"'/ 	[[ \" ${added_files[*]} \" =~ \" \1 \" ]] || added_files[${#added_files[@]}]=\"\1\"/p
-                        }
-
-                        /^# Changed but not updated:/,/^# [A-Z]/ {
-                            s/^# Changed but not updated:/modified=modified;/p
-                            s/^#	modified:   '"$file_regex"'/	[[ \" ${modified_files[*]} \" =~ \" \1 \" ]] || modified_files[${#modified_files[@]}]=\"\1\"/p
-                            s/^#	unmerged:   '"$file_regex"'/	[[ \" ${modified_files[*]} \" =~ \" \1 \" ]] || modified_files[${#modified_files[@]}]=\"\1\"/p
-                        }
-
-                        /^# Changes not staged for commit:/,/^# [A-Z]/ {
-                            s/^# Changes not staged for commit:/modified=modified;/p
-                            s/^#	modified:   '"$file_regex"'/	[[ \" ${modified_files[*]} \" =~ \" \1 \" ]] || modified_files[${#modified_files[@]}]=\"\1\"/p
-                            s/^#	unmerged:   '"$file_regex"'/	[[ \" ${modified_files[*]} \" =~ \" \1 \" ]] || modified_files[${#modified_files[@]}]=\"\1\"/p
-                        }
-
-                        /^# Unmerged paths:/,/^[^#]/ {
-                            s/^# Unmerged paths:/modified=modified;/p
-                            s/^#	both modified:\s*'"$file_regex"'/	[[ \" ${modified_files[*]} \" =~ \" \1 \" ]] || modified_files[${#modified_files[@]}]=\"\1\"/p
-                        }
-
-                        /^# Untracked files:/,/^[^#]/{
-                            s/^# Untracked files:/untracked=untracked;/p
-                            s/^#	'"$file_regex"'/		[[ \" ${untracked_files[*]} ${modified_files[*]} ${added_files[*]} \" =~ \" \1 \" ]] || untracked_files[${#untracked_files[@]}]=\"\1\"/p
-                        }
+                        s/^# Your branch is ahead of \(.\).\+\1 by [[:digit:]]\+ commit.*/freshness=${WHITE}↑/p
+                        s/^# Your branch is behind \(.\).\+\1 by [[:digit:]]\+ commit.*/freshness=${YELLOW}↓/p
+                        s/^# Your branch and \(.\).\+\1 have diverged.*/freshness=${YELLOW}↕/p
                     '
         )"
 
-        if  ! grep -q "^ref:" $git_dir/HEAD  2>/dev/null;   then
+	# porcelain file list
+                                        # TODO:  sed-less -- http://tldp.org/LDP/abs/html/arrays.html  -- Example 27-5
+
+                                        # git bug:  (was reported to git@vger.kernel.org )
+                                        # echo 1 > "with space"
+                                        # git status --porcelain
+                                        # ?? with space                   <------------ NO QOUTES
+                                        # git add with\ space
+                                        # git status --porcelain
+                                        # A  "with space"                 <------------- WITH QOUTES
+
+        eval " $(
+                git status --porcelain 2>/dev/null |
+                        sed -n '
+                                s,^[MARC]. \([^\"][^/]*/\?\).*,         added=added;           [[ \" ${added_files[@]} \"      =~ \" \1 \" ]]   || added_files[${#added_files[@]}]=\"\1\",p
+                                s,^[MARC]. \"\([^/]\+/\?\).*\"$,        added=added;           [[ \" ${added_files[@]} \"      =~ \" \1 \" ]]   || added_files[${#added_files[@]}]=\"\1\",p
+                                s,^.[MAU] \([^\"][^/]*/\?\).*,          modified=modified;     [[ \" ${modified_files[@]} \"   =~ \" \1 \" ]]   || modified_files[${#modified_files[@]}]=\"\1\",p
+                                s,^.[MAU] \"\([^/]\+/\?\).*\"$,         modified=modified;     [[ \" ${modified_files[@]} \"   =~ \" \1 \" ]]   || modified_files[${#modified_files[@]}]=\"\1\",p
+                                s,^?? \([^\"][^/]*/\?\).*,              untracked=untracked;   [[ \" ${untracked_files[@]} \"  =~ \" \1 \" ]]   || untracked_files[${#untracked_files[@]}]=\"\1\",p
+                                s,^?? \"\([^/]\+/\?\).*\"$,             untracked=untracked;   [[ \" ${untracked_files[@]} \"  =~ \" \1 \" ]]   || untracked_files[${#untracked_files[@]}]=\"\1\",p
+                        '   # |tee /dev/tty
+        )"
+
+        if  ! grep -q "^ref:" "$git_dir/HEAD"  2>/dev/null;   then
                 detached=detached
         fi
 
@@ -533,7 +539,7 @@ parse_git_status() {
         fi
 
         #### branch
-        branch=${branch/master/M}
+        branch=${branch/#master/M}
 
                         # another method of above:
                         # branch=$(git symbolic-ref -q HEAD || { echo -n "detached:" ; git name-rev --name-only HEAD 2>/dev/null; } )
@@ -541,7 +547,7 @@ parse_git_status() {
 
         ### compose vcs_info
 
-        if [[ $init ]];  then 
+        if [[ $init ]];  then
                 vcs_info=${white}init
 
         else
@@ -602,7 +608,7 @@ parse_vcs_status() {
                 if [[ $vim_glob ]];  then
                     set $vim_glob
                     #vim_file=${vim_glob#.}
-                    if [[ $# > 1 ]] ; then 
+                    if [[ $# > 1 ]] ; then
                             vim_files="*"
                     else
                             vim_file=${1#.}
@@ -644,6 +650,16 @@ parse_vcs_status() {
         #tail_local="${tail_local+$vcs_color $tail_local}${dir_color}"
  }
 
+parse_virtualenv_status() {
+    unset virtualenv
+
+    [[ $virtualenv_module = "on" ]] || return 1
+
+    if [[ -n "$VIRTUAL_ENV" ]] ; then
+	virtualenv=`basename $VIRTUAL_ENV`
+	rc="$rc $virtualenv_color<$virtualenv> "
+    fi
+ }
 parse_rvm_status() {
         local gemset=$(echo $GEM_HOME | awk -F'@' '{print $2}')
         [ "$gemset" != "" ] && gemset="@$gemset"
@@ -653,22 +669,6 @@ parse_rvm_status() {
         [[ "$rvm_info" ]] && rvm_info="$rvm_color[$rvm_info] "
 }
 
-parse_venv_status() {
-        if [[ "$VIRTUAL_ENV" ]]; then
-                local env="$VIRTUAL_ENV"
-                local env_name=""
-                while [[ "$env" && "$env" != "/" ]]; do
-                        env_name="$(basename $env)"
-                        if [[ "${env_name:0:1}" != "." ]]; then
-                                venv_info="$venv_color[$env_name] "
-                                return 0
-                        fi
-                        env="$(dirname $env)"
-                done
-        fi
-        venv_info=""
-        return 1
-}
 
 disable_set_shell_label() {
         trap - DEBUG  >& /dev/null
@@ -681,6 +681,9 @@ enable_set_shell_label() {
         trap '[[ -z "$BASH_SOURCE" && ($BASH_COMMAND != prompt_command_function) ]] &&
 	     set_shell_label $BASH_COMMAND' DEBUG  >& /dev/null
  }
+
+declare -ft disable_set_shell_label
+declare -ft enable_set_shell_label
 
 # autojump (see http://wiki.github.com/joelthelion/autojump)
 
@@ -717,10 +720,10 @@ prompt_command_function() {
         cwd=${PWD/$HOME/\~}                     # substitute  "~"
         set_shell_label "${cwd##[/~]*/}/"       # default label - path last dir
 
+		parse_virtualenv_status
         parse_vcs_status
         [[ $rvm_module = "on" ]] && type rvm >&/dev/null && parse_rvm_status
-        [[ $venv_module = "on" ]] && type virtualenv >&/dev/null && parse_venv_status
-        [[ $clock_module = "on" ]] && local clock="$clock_color$(date +$clock_format) "
+        [[ $clock_module = "on" ]] && local clock="$clock_color$(date "+$clock_format") "
 
 
 
@@ -733,7 +736,7 @@ prompt_command_function() {
         # else eval cwd_cmd,  cwd should have path after exection
         eval "${cwd_cmd/\\/cwd=\\\\}"
 
-        PS1="$colors_reset$clock$rc$head_local$venv_info$rvm_info$color_who_where$dir_color$cwd$tail_local$dir_color$prompt_char $colors_reset"
+        PS1="$colors_reset$clock$rc$head_local$rvm_info$color_who_where$dir_color$cwd$tail_local$dir_color$prompt_char $colors_reset"
 
         unset head_local tail_local pwd
  }
